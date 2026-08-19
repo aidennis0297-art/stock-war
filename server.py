@@ -387,8 +387,13 @@ def _kiwoom_token():
                        "appkey": appkey, "secretkey": secretkey}).encode()
     req = urllib.request.Request(KIWOOM_HOST + "/oauth2/token", body,
                                  {"Content-Type": "application/json;charset=UTF-8"})
-    with urllib.request.urlopen(req, timeout=10) as r:
-        d = json.load(r)
+    try:
+        with urllib.request.urlopen(req, timeout=10) as r:
+            d = json.load(r)
+    except urllib.error.HTTPError as e:
+        raise RuntimeError("키움 토큰 발급 실패: HTTP %d %s (앱키 %d자 / 시크릿 %d자, %s)"
+                           % (e.code, _kw_reason(e), len(appkey), len(secretkey),
+                              KIWOOM_HOST.split("//")[-1]))
     if "token" not in d:
         # 응답 딕셔너리를 통째로 실으면 토큰이 오류 화면에 찍힐 수 있다
         raise RuntimeError("키움 토큰 발급 거부: %s"
@@ -408,6 +413,15 @@ def _kiwoom_token():
     return _kw_token["value"]
 
 
+def _kw_reason(e):
+    """상류 오류 본문에서 사람이 읽을 이유만 뽑는다. 본문을 통째로 싣지 않는다."""
+    try:
+        d = json.loads(e.read().decode("utf-8", "replace"))
+        return str(d.get("return_msg") or d.get("error") or "")[:140]
+    except Exception:
+        return ""
+
+
 def _kw_post(path, api_id, body, retry=True):
     req = urllib.request.Request(
         KIWOOM_HOST + path, json.dumps(body).encode(),
@@ -422,7 +436,9 @@ def _kw_post(path, api_id, body, retry=True):
         if e.code == 429 and retry:
             time.sleep(0.8)
             return _kw_post(path, api_id, body, retry=False)
-        raise
+        # 어느 API 가 왜 막혔는지 남긴다. 상류 메시지만 싣고 키는 싣지 않는다.
+        raise RuntimeError("키움 %s 실패: HTTP %d %s"
+                           % (api_id, e.code, _kw_reason(e)))
 
 
 def _kw_investors(trde_tp, day):
