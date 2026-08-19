@@ -392,9 +392,16 @@ def _kiwoom_token():
         with urllib.request.urlopen(req, timeout=10) as r:
             d = json.load(r)
     except urllib.error.HTTPError as e:
-        raise RuntimeError("키움 토큰 발급 실패: HTTP %d %s (앱키 %d자 / 시크릿 %d자, %s)"
-                           % (e.code, _kw_reason(e), len(appkey), len(secretkey),
-                              KIWOOM_HOST.split("//")[-1]))
+        # 본문 없는 400 이면 애플리케이션이 아니라 앞단(WAF/게이트웨이)에서 막힌
+        # 것이다. 어느 쪽인지 가리려면 응답 헤더를 봐야 한다.
+        head = dict(e.headers or {})
+        raw = e.read().decode("utf-8", "replace")[:200]
+        raise RuntimeError(
+            "키움 토큰 발급 실패: HTTP %d | 본문 %d자 %r | server=%s cf-ray=%s | "
+            "앱키 %d자 시크릿 %d자 → %s"
+            % (e.code, len(raw), raw[:120],
+               head.get("Server", "-"), head.get("CF-RAY", "-"),
+               len(appkey), len(secretkey), KIWOOM_HOST.split("//")[-1]))
     if "token" not in d:
         # 응답 딕셔너리를 통째로 실으면 토큰이 오류 화면에 찍힐 수 있다
         raise RuntimeError("키움 토큰 발급 거부: %s"
