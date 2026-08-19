@@ -10,6 +10,7 @@ KIS_APP_KEY / KIS_APP_SECRET 환경변수가 있으면 한국투자증권 OpenAP
 
     python server.py     # http://localhost:8000
 """
+import hashlib
 import json
 import math
 import os
@@ -755,9 +756,20 @@ class Handler(BaseHTTPRequestHandler):
             "host": KIWOOM_HOST if PROVIDER == "kiwoom" else KIS_HOST,
             "symbol": SYMBOL,
             "keyLen": len(appkey), "secretLen": len(secret),
+            # 지문은 되돌릴 수 없다. 값을 드러내지 않고도 로컬과 같은 키인지 대조된다.
+            "keyFp": hashlib.sha256(appkey.encode()).hexdigest()[:12],
+            "secretFp": hashlib.sha256(secret.encode()).hexdigest()[:12],
+            "egress": None,
             "hasDemoKeys": bool(os.environ.get("KIWOOM_DEMO_APP_KEY")),
             "hasBaseKeys": bool(os.environ.get("KIWOOM_APP_KEY")),
         }
+        # 나가는 IP 를 확인한다. 국내 증권사 API 가 해외 IP 를 막는 경우가 있어
+        # 키가 맞는데도 거부당하는지 가리는 데 필요하다.
+        try:
+            with urllib.request.urlopen("https://api.ipify.org?format=json", timeout=6) as r:
+                info["egress"] = json.load(r).get("ip")
+        except Exception as e:
+            info["egress"] = "확인 실패: " + type(e).__name__
         if LIVE and PROVIDER == "kiwoom":
             try:
                 _kiwoom_token()
