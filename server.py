@@ -777,6 +777,18 @@ class Handler(BaseHTTPRequestHandler):
                 info["egress"] = json.load(r).get("ip")
         except Exception as e:
             info["egress"] = "확인 실패: " + type(e).__name__
+        # 인증도 본문도 없는 맨 GET 을 던져 본다. 이것마저 같은 400 이면 요청이
+        # 잘못된 게 아니라 이 호스트에 닿는 것 자체가 막힌 것이다.
+        try:
+            req = urllib.request.Request(KIWOOM_HOST + "/", method="GET")
+            with urllib.request.urlopen(req, timeout=8) as r:
+                info["plainGet"] = "HTTP %d" % r.status
+        except urllib.error.HTTPError as e:
+            body = e.read().decode("utf-8", "replace")
+            info["plainGet"] = "HTTP %d | %s" % (e.code, " ".join(body[:90].split()))
+        except Exception as e:
+            info["plainGet"] = "실패: " + type(e).__name__
+
         if LIVE and PROVIDER == "kiwoom":
             try:
                 _kiwoom_token()
