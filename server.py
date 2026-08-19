@@ -612,7 +612,7 @@ def _kis_get(path, tr_id, extra=None):
                  "appkey": os.environ["KIS_APP_KEY"],
                  "appsecret": os.environ["KIS_APP_SECRET"],
                  "tr_id": tr_id, "custtype": "P"})
-    with urllib.request.urlopen(req, timeout=10) as r:
+    with urllib.request.urlopen(req, timeout=8) as r:
         return json.load(r)
 
 
@@ -676,8 +676,10 @@ def live_raw():
         fetch = kiwoom_raw if PROVIDER == "kiwoom" else kis_raw
         # 종목을 갓 바꿨을 때는 기댈 이전 값이 없다. 여기서 502 를 뱉으면 화면이
         # 빈 채로 멎으므로, 이 경우에만 물러서지 않고 몇 번 더 시도한다.
+        # 재시도가 길면 배포 환경의 게이트웨이 제한(보통 100초 안팎)을 넘겨
+        # 응답 자체가 끊긴다. 그러면 정작 원인 메시지를 못 본다.
         cold = _live["raw"] is None
-        for attempt in range(3 if cold else 1):
+        for attempt in range(2 if cold else 1):
             try:
                 _live["raw"] = fetch()
                 _live["at"] = time.time()
@@ -685,8 +687,8 @@ def live_raw():
                 return _live["raw"]
             except Exception as e:
                 err = e
-                if cold and attempt < 2:
-                    time.sleep(1.5)
+                if cold and attempt < 1:
+                    time.sleep(0.8)
         if cold:
             raise err
         # now 는 함수 진입 시각이라, 상류가 타임아웃까지 끌면 이미 지난 시각이 된다.
@@ -732,6 +734,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.do_symbols()
         if path == "/api/state":
             return self.do_state()
+        if path == "/api/health":
+            return self.do_health()
         entry = STATIC.get(path)
         if entry is None:
             self.send_error(404, "not found")
@@ -741,6 +745,27 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(f.read(), entry[1])
         except OSError:
             self.send_error(404, "not found")
+
+    def do_health(self):
+        """설정과 상류 접속을 한 번에 점검한다. 키 값은 어떤 경우에도 싣지 않는다."""
+        appkey, secret = kiwoom_creds() if PROVIDER == "kiwoom" else ("", "")
+        info = {
+            "provider": PROVIDER or "mock", "live": LIVE, "public": PUBLIC,
+            "kiwoomEnv": os.environ.get("KIWOOM_ENV", "(미설정)"),
+            "host": KIWOOM_HOST if PROVIDER == "kiwoom" else KIS_HOST,
+            "symbol": SYMBOL,
+            "keyLen": len(appkey), "secretLen": len(secret),
+            "hasDemoKeys": bool(os.environ.get("KIWOOM_DEMO_APP_KEY")),
+            "hasBaseKeys": bool(os.environ.get("KIWOOM_APP_KEY")),
+        }
+        if LIVE and PROVIDER == "kiwoom":
+            try:
+                _kiwoom_token()
+                info["token"] = "정상 발급"
+            except Exception as e:
+                info["token"] = str(e)[:200]
+        body = json.dumps(info, ensure_ascii=False, indent=1).encode("utf-8")
+        self._send(body, "application/json; charset=utf-8")
 
     def do_state(self):
         try:
