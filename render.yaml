@@ -1,0 +1,25 @@
+# Render 무료 웹 서비스 설정. 키는 여기에 적지 않는다 — sync:false 는
+# "대시보드에서 직접 입력한다"는 뜻이고, 그래야 저장소에 안 남는다.
+services:
+  - type: web
+    name: stock-war
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python server.py
+    envVars:
+      # 공개 배포 스위치. 켜져 있으면 실전 키로는 서버가 아예 뜨지 않는다.
+      - key: STOCK_WAR_PUBLIC
+        value: "1"
+      - key: KIWOOM_ENV
+        value: demo
+      - key: STOCK_WAR_SYMBOL
+        value: "005930"
+      - key: STOCK_WAR_NAME
+        value: 삼성전자
+      # 아래 둘은 Render 대시보드 > Environment 에서 입력한다. 저장소에는 없다.
+      # 이름에 DEMO 가 박혀 있어 실전 키를 잘못 넣을 여지가 줄어든다.
+      - key: KIWOOM_DEMO_APP_KEY
+        sync: false
+      - key: KIWOOM_DEMO_SECRET_KEY
+        sync: false

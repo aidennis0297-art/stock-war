@@ -1,0 +1,300 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>주식 전쟁 · 삼성전자</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Gowun+Batang:wght@400;700&family=Gowun+Dodum&family=IBM+Plex+Mono:wght@500;600&display=swap">
+<style>
+  /* 전장이 황혼으로 고정된 화면이라 테마는 하나로 못박는다. 모든 색을 명시한다. */
+  :root {
+    --red:#d8342b; --blue:#2f6fd0; --gold:#e8c26a;
+    --ink:#e9e2d6; --dim:#a89e8e; --ground:#1a1720;
+    --panel:rgba(20,17,26,.80); --edge:rgba(232,194,106,.20);
+    --hud-scale:1;
+    --mono:"IBM Plex Mono",ui-monospace,monospace;
+    --serif:"Gowun Batang",serif;
+    --sans:"Gowun Dodum","Malgun Gothic",system-ui,sans-serif;
+  }
+  * { box-sizing:border-box; margin:0; }
+  body { background:var(--ground); color:var(--ink); overflow:hidden; font:14px/1.45 var(--sans); }
+  canvas#c { display:block; position:fixed; inset:0; }
+
+  #hud { position:fixed; inset:0; pointer-events:none; padding:16px; display:grid;
+         gap:12px; grid-template-rows:auto 1fr auto;
+         grid-template-areas:"red ticker blue" ". . ." "bottom bottom bottom";
+         grid-template-columns:minmax(120px,1fr) auto minmax(120px,1fr); }
+  #hud[hidden] { display:none; }
+  .panel { background:var(--panel); border:1px solid var(--edge); border-radius:3px;
+           padding:12px 14px; backdrop-filter:blur(7px); }
+
+  /* 진영 패널과 티커는 각자 바깥 모서리를 축으로 커진다 */
+  #redArmy  { grid-area:red;  justify-self:start; transform:scale(var(--hud-scale)); transform-origin:top left; }
+  #blueArmy { grid-area:blue; justify-self:end;   transform:scale(var(--hud-scale)); transform-origin:top right; }
+  #ticker   { grid-area:ticker; align-self:start; transform:scale(var(--hud-scale)); transform-origin:top center; }
+  #bottom   { grid-area:bottom; justify-self:center; transform:scale(var(--hud-scale)); transform-origin:bottom center; }
+
+  .army { width:clamp(148px,15vw,210px); }
+  .side { font:700 15px/1 var(--serif); letter-spacing:.14em; margin-bottom:2px; }
+  .side small { display:block; font:400 10px/1.6 var(--sans); letter-spacing:.18em;
+                color:var(--dim); margin-top:4px; }
+  .rows { display:flex; flex-direction:column; gap:1px; margin-top:10px; }
+  .row { display:flex; justify-content:space-between; align-items:baseline; gap:8px;
+         padding:4px 0; border-bottom:1px solid rgba(255,255,255,.05); }
+  .row:last-child { border-bottom:0; }
+  .row span { font-size:13px; }
+  .row i { font-style:normal; font-size:10px; letter-spacing:.06em; color:var(--dim); margin-left:5px; }
+  .row b { font:600 16px/1 var(--mono); font-variant-numeric:tabular-nums; }
+  .pie { display:block; margin:12px auto 2px; width:132px; height:132px; }
+
+  #ticker { text-align:center; min-width:0; position:relative;
+            pointer-events:auto; cursor:pointer; }
+  #ticker:hover { border-color:rgba(232,194,106,.45); }
+  #name::after { content:" BE"; color:var(--gold); }
+
+  /* 종목 목록 — 시총 상위. 길어지면 스크롤한다 */
+  #picker { position:absolute; top:calc(100% + 6px); left:50%; transform:translateX(-50%);
+            width:230px; max-height:198px; overflow-y:auto; display:none; z-index:5;
+            background:var(--panel); border:1px solid var(--edge); border-radius:3px;
+            backdrop-filter:blur(7px); text-align:left; }
+  #picker.on { display:block; }
+
+  /* 교체 직후 잠금 안내 */
+  #pickNote { position:absolute; top:calc(100% + 6px); left:50%; transform:translateX(-50%);
+              width:230px; padding:10px 12px; z-index:6; display:none; text-align:center;
+              background:var(--panel); border:1px solid rgba(232,194,106,.45); border-radius:3px;
+              font-size:11px; line-height:1.5; letter-spacing:.06em; color:var(--gold);
+              backdrop-filter:blur(7px); white-space:pre-line; }
+  #pickNote.on { display:block; }
+  #picker li { list-style:none; display:flex; justify-content:space-between; align-items:baseline;
+               gap:8px; padding:9px 11px; border-bottom:1px solid rgba(255,255,255,.05); }
+  #picker li:last-child { border-bottom:0; }
+  #picker li:hover { background:rgba(232,194,106,.10); }
+  #picker li[aria-current="true"] { color:var(--gold); }
+  #picker .nm { font-size:12px; }
+  #picker .cd { font:500 10px/1 var(--mono); color:var(--dim); }
+  #picker::-webkit-scrollbar { width:6px; }
+  #picker::-webkit-scrollbar-thumb { background:rgba(232,194,106,.28); border-radius:3px; }
+  #stamp { display:flex; justify-content:center; gap:12px; margin-top:9px;
+           padding-top:8px; border-top:1px solid rgba(255,255,255,.07);
+           font:400 10px/1 var(--sans); letter-spacing:.1em; color:var(--dim); }
+  #stamp b { font:500 10px/1 var(--mono); font-variant-numeric:tabular-nums;
+             color:var(--ink); margin-left:5px; }
+  #name { font:400 11px/1 var(--sans); letter-spacing:.24em; color:var(--dim); white-space:nowrap; }
+  #price { font:600 34px/1.2 var(--mono); font-variant-numeric:tabular-nums; margin-top:6px; }
+  #chg { font:500 14px/1 var(--mono); font-variant-numeric:tabular-nums; white-space:nowrap; }
+  .up { color:var(--red); } .down { color:var(--blue); } .flat { color:var(--dim); }
+
+  #bottom { width:min(520px,92vw); }
+  #frontbar { position:relative; height:6px; margin-bottom:12px;
+              background:linear-gradient(90deg,var(--red),#241f28 46%,#241f28 54%,var(--blue)); }
+  #frontMark { position:absolute; top:-6px; left:50%; width:2px; height:18px;
+               background:var(--gold); box-shadow:0 0 9px var(--gold);
+               transform:translateX(-50%); transition:left .8s ease; }
+  #stats { display:flex; gap:16px; justify-content:center; flex-wrap:wrap;
+           font-size:11px; letter-spacing:.08em; color:var(--dim); white-space:nowrap; }
+  #stats b { font:600 12px/1 var(--mono); font-variant-numeric:tabular-nums; color:var(--ink);
+             margin-left:5px; }
+  #src { border:1px solid var(--edge); padding:1px 7px; color:var(--dim); letter-spacing:.1em; }
+  #src.open { color:var(--gold); border-color:rgba(232,194,106,.45); }
+
+  /* 컨트롤은 HUD 를 숨겨도 남아야 다시 켤 수 있다 */
+  #controls { position:fixed; right:14px; bottom:14px; display:flex; align-items:center; gap:10px;
+              background:var(--panel); border:1px solid var(--edge); border-radius:3px;
+              padding:7px 11px; backdrop-filter:blur(7px); font-size:11px; color:var(--dim);
+              letter-spacing:.1em; }
+  #controls label, .views { display:flex; align-items:center; gap:6px; }
+  #scale { width:88px; accent-color:var(--gold); }
+  button.view { padding:5px 8px; font:600 11px/1 var(--mono); }
+  button.view.set { color:var(--gold); border-color:rgba(232,194,106,.45); }
+  #sound { padding:5px 9px; }
+  button.ctl { font:400 11px/1 var(--sans); letter-spacing:.1em; color:var(--ink); cursor:pointer;
+               background:transparent; border:1px solid var(--edge); border-radius:2px; padding:5px 10px; }
+  button.ctl:hover { border-color:var(--gold); color:var(--gold); }
+  button.ctl[aria-pressed="true"] { border-color:var(--gold); color:var(--gold); }
+  button.ctl:focus-visible, #scale:focus-visible, #devPct:focus-visible {
+    outline:2px solid var(--gold); outline-offset:2px; }
+
+  /* 개발자 툴 — 목업일 때만 붙는다 */
+  #dev { position:fixed; right:14px; bottom:60px; width:250px; display:none;
+         flex-direction:column; gap:9px; background:var(--panel); border:1px solid var(--edge);
+         border-radius:3px; padding:12px 13px; backdrop-filter:blur(7px); }
+  #dev.on { display:flex; }
+  #dev .hd { font-size:10px; letter-spacing:.22em; color:var(--gold); }
+  #dev .val { display:flex; justify-content:space-between; align-items:baseline;
+              font:600 20px/1 var(--mono); font-variant-numeric:tabular-nums; }
+  #dev .val em { font:500 12px/1 var(--mono); font-style:normal; color:var(--dim); }
+  #devPct { width:100%; accent-color:var(--gold); }
+  #dev .btns { display:flex; gap:7px; }
+  #dev .btns button { flex:1; }
+  #dev .note { font-size:10px; line-height:1.5; color:var(--dim); letter-spacing:.04em; }
+
+  /* 뉴스 — HUD 와 함께 숨겨진다 */
+  #news { position:absolute; left:16px; bottom:104px; display:flex; flex-direction:column-reverse;
+          gap:6px; width:270px; }
+  .newsItem { background:var(--panel); border:1px solid var(--edge); border-left-width:3px;
+              border-radius:2px; padding:8px 10px; font-size:12px; line-height:1.4;
+              backdrop-filter:blur(7px); animation:slideIn .45s ease both; }
+  .newsItem.good { border-left-color:var(--red); }
+  .newsItem.bad  { border-left-color:var(--blue); }
+  .newsItem.out  { animation:fadeOut .6s ease both; }
+  .newsItem b { font:700 11px/1 var(--serif); letter-spacing:.1em; margin-right:6px; }
+  .newsItem.good b { color:var(--red); } .newsItem.bad b { color:var(--blue); }
+  .newsItem em { display:block; font:400 10px/1 var(--sans); font-style:normal;
+                 letter-spacing:.12em; color:var(--dim); margin-top:5px; }
+  @keyframes slideIn { from { opacity:0; transform:translateX(-18px); } }
+  @keyframes fadeOut { to { opacity:0; transform:translateX(-14px); } }
+
+  /* 고른 유닛 정보와 한마디 입력. 나중에 채팅이 붙을 자리다. */
+  #selBox { position:fixed; left:14px; bottom:14px; display:none; align-items:center;
+            gap:9px; background:var(--panel); border:1px solid var(--edge);
+            border-radius:3px; padding:8px 11px; backdrop-filter:blur(7px);
+            font-size:11px; letter-spacing:.08em; color:var(--dim); }
+  #selBox.on { display:flex; }
+  #selInfo { color:var(--gold); white-space:nowrap; }
+  #selSay { width:150px; background:rgba(0,0,0,.35); color:var(--ink);
+            border:1px solid var(--edge); border-radius:2px; padding:5px 8px;
+            font:400 11px/1 var(--sans); }
+  #selSay:focus-visible { outline:2px solid var(--gold); outline-offset:1px; }
+
+  /* 종목 교체 중 — 병사들이 성으로 물러나는 동안 덮는다 */
+  #loading { position:fixed; inset:0; display:none; place-items:center; z-index:20;
+             background:rgba(11,9,13,.5); backdrop-filter:blur(2px); overflow:hidden; }
+  #loading.on { display:grid; }
+  #loading .msg { position:relative; font:400 15px/1 var(--serif); letter-spacing:.42em;
+                  color:var(--gold); text-shadow:0 0 18px rgba(232,194,106,.5); }
+  #loading .msg::after { content:""; animation:dots 1.4s steps(4,end) infinite; }
+  .cloud { position:absolute; border-radius:50%; pointer-events:none;
+           background:radial-gradient(closest-side, rgba(255,242,220,.13), transparent 72%);
+           animation:drift linear infinite; }
+  @keyframes drift { from { transform:translateX(-24vw); } to { transform:translateX(124vw); } }
+  @keyframes dots { 0%{content:""} 25%{content:"·"} 50%{content:"··"} 75%{content:"···"} }
+
+  /* 사이드카 · 함락 경보 */
+  #alert { position:fixed; inset:0; display:grid; place-items:center; pointer-events:none;
+           opacity:0; transition:opacity .5s ease; }
+  #alert.on { opacity:1; }
+  #alert .box { text-align:center; padding:26px 54px;
+                border-top:1px solid var(--gold); border-bottom:1px solid var(--gold);
+                background:linear-gradient(180deg,transparent,rgba(232,194,106,.09),transparent); }
+  #alert .big { font:700 clamp(38px,7vw,86px)/1 var(--serif); letter-spacing:.16em;
+                color:var(--gold); text-shadow:0 0 34px rgba(232,194,106,.5); }
+  #alert .sub { font:400 13px/1 var(--sans); letter-spacing:.34em; color:var(--ink);
+                margin-top:16px; }
+  #alert .countdown { font:600 12px/1 var(--mono); letter-spacing:.1em; color:var(--dim); margin-top:9px; }
+  @media (prefers-reduced-motion:reduce) { * { transition:none !important; } }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+
+<div id="hud">
+  <div class="panel army" id="redArmy">
+    <div class="side" style="color:var(--red)">홍군<small>매 수 세 력</small></div>
+    <div class="rows">
+      <div class="row"><span>보병<i>개인</i></span><b id="r-infantry">0</b></div>
+      <div class="row"><span>궁병<i>연기금</i></span><b id="r-archer">0</b></div>
+      <div class="row"><span>기병<i>외국인</i></span><b id="r-cavalry">0</b></div>
+      <div class="row"><span>장군<i>기관</i></span><b id="r-general">0</b></div>
+    </div>
+    <canvas class="pie" id="r-pie" width="300" height="300"></canvas>
+  </div>
+
+  <div class="panel" id="ticker">
+    <div id="name">삼성전자 005930</div>
+    <div id="price">—</div>
+    <div id="chg" class="flat">—</div>
+    <div id="stamp"><span>갱신<b id="upd">—</b></span><span>주기<b id="cyc">—</b></span></div>
+    <ul id="picker"></ul>
+    <div id="pickNote"></div>
+  </div>
+
+  <div class="panel army" id="blueArmy">
+    <div class="side" style="color:var(--blue)">청군<small>매 도 세 력</small></div>
+    <div class="rows">
+      <div class="row"><span>보병<i>개인</i></span><b id="b-infantry">0</b></div>
+      <div class="row"><span>궁병<i>연기금</i></span><b id="b-archer">0</b></div>
+      <div class="row"><span>기병<i>외국인</i></span><b id="b-cavalry">0</b></div>
+      <div class="row"><span>장군<i>기관</i></span><b id="b-general">0</b></div>
+    </div>
+    <canvas class="pie" id="b-pie" width="300" height="300"></canvas>
+  </div>
+
+  <div class="panel" id="bottom">
+    <div id="frontbar"><div id="frontMark"></div></div>
+    <div id="stats">
+      <span>거래량<b id="vol">—</b></span>
+      <span>호가압력<b id="pres">—</b></span>
+      <span>전투강도<b id="tempo">—</b></span>
+      <span id="src">연결 중</span>
+    </div>
+  </div>
+
+  <div id="news"></div>
+</div>
+
+<div id="controls">
+  <span class="views" title="클릭: 그 시점으로 이동 · Shift+클릭: 지금 화면을 저장">시점
+    <button class="ctl view" data-slot="1">1</button>
+    <button class="ctl view" data-slot="2">2</button>
+    <button class="ctl view" data-slot="3">3</button>
+  </span>
+  <label>크기<input type="range" id="scale" min="0.6" max="1.6" step="0.05" value="1"></label>
+  <button class="ctl" id="sound" aria-pressed="false" title="소리 켜기/끄기">♪</button>
+  <button class="ctl" id="devToggle" aria-pressed="false" hidden>DEV</button>
+  <button class="ctl" id="toggle" aria-pressed="false"><span id="toggleLabel">숨기기</span> <span style="color:var(--dim)">H</span></button>
+</div>
+
+<div id="dev">
+  <div class="hd">개 발 자 툴</div>
+  <div class="val"><span id="devPrice">—</span><em id="devPctV">자동</em></div>
+  <input type="range" id="devPct" min="-30" max="30" step="0.1" value="0" aria-label="등락률">
+  <div class="btns">
+    <button class="ctl" id="devUp">상한가</button>
+    <button class="ctl" id="devDown">하한가</button>
+  </div>
+  <div class="btns">
+    <button class="ctl" id="devGood">호재</button>
+    <button class="ctl" id="devBad">악재</button>
+  </div>
+  <div class="btns">
+    <button class="ctl" id="devAuto">자동</button>
+    <button class="ctl" id="devReset">리셋</button>
+  </div>
+  <div class="btns">
+    <button class="ctl" id="devRuler" aria-pressed="false">눈금</button>
+  </div>
+  <div class="note">가격을 잡고 있어도 호가·수급은 계속 움직인다. 리셋은 고가/저가와 함락을 되돌린다.</div>
+</div>
+
+<div id="selBox">
+  <span id="selInfo"></span>
+  <input id="selSay" type="text" maxlength="26" placeholder="한마디 입력 후 Enter">
+  <button class="ctl" id="selView">시점</button>
+  <button class="ctl" id="selClose">닫기</button>
+</div>
+
+<div id="loading">
+  <div class="cloud" style="width:46vw;height:22vh;top:14%;left:-24vw;animation-duration:17s"></div>
+  <div class="cloud" style="width:62vw;height:28vh;top:44%;left:-30vw;animation-duration:23s;animation-delay:-8s"></div>
+  <div class="cloud" style="width:38vw;height:18vh;top:70%;left:-20vw;animation-duration:14s;animation-delay:-4s"></div>
+  <div class="msg">종 목 변 경 중</div>
+</div>
+
+<div id="alert"><div class="box">
+  <div class="big" id="alertBig">사이드카</div>
+  <div class="sub" id="alertSub">발 동</div>
+  <div class="countdown" id="alertTime">—</div>
+</div></div>
+
+<script type="importmap">
+{ "imports": {
+    "three": "https://unpkg.com/three@0.169.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.169.0/examples/jsm/"
+} }
+</script>
+<script type="module">import("./war.js?v=" + Date.now());</script>
+</body>
+</html>

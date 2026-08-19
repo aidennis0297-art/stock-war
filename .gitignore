@@ -1,0 +1,5 @@
+__pycache__/
+.env
+.kiwoom_token.json
+.symbols.json
+.picked.json
