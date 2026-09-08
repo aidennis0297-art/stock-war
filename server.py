@@ -718,6 +718,64 @@ STATIC = {
 }
 
 
+# 보는 사람이 남긴 한마디. 관중이나 병사가 대신 외친다. 남기지 않는다 —
+# 지나간 이야기를 나중에 들어야 할 이유가 없고, 쌓아 두면 지울 것만 는다.
+CHAT_MAX = 30                 # 이보다 밀린 말은 흘려 보낸다
+CHAT_LEN = 40                 # 말풍선이 26자에서 잘리므로 더 받아도 소용없다
+CHAT_GAP_S = 2.0              # 한 사람이 이 간격보다 자주 던질 수 없다
+_chat = {"items": [], "seq": 0, "last": {}}
+
+
+def chat_clean(text):
+    """말풍선에 그릴 수 있는 한 줄로 눌러 담는다.
+
+    말풍선은 canvas 에 그리므로 태그가 살아날 자리는 없다. 다만 제어문자가
+    섞이면 글자 폭 계산이 어긋나고, 개행은 두 줄짜리 배치를 망가뜨린다.
+    """
+    s = "".join(c for c in str(text) if c.isprintable() or c.isspace())
+    return " ".join(s.split())[:CHAT_LEN]
+
+
+def chat_who(handler):
+    """레이트 리밋을 걸 기준.
+
+    터널 뒤에서는 모든 요청이 루프백에서 오므로 client_address 로는 사람을
+    가릴 수 없다. Cloudflare 가 붙여 주는 원 IP 를 쓰되, 루프백에서 들어온
+    요청에서만 믿는다 — 서버가 직접 노출돼 있으면 얼마든지 지어낼 수 있다.
+    """
+    peer = handler.client_address[0]
+    if peer in ("127.0.0.1", "::1"):
+        fwd = handler.headers.get("CF-Connecting-IP")
+        if fwd:
+            return fwd.strip()[:45]
+    return peer
+
+
+def push_chat(text, who, now):
+    """받아들였으면 붙인 번호를, 너무 자주 던졌으면 None 을 준다."""
+    if now - _chat["last"].get(who, 0.0) < CHAT_GAP_S:
+        return None
+    if len(_chat["last"]) > 500:
+        # 다녀간 사람 수만큼 무한정 쌓이지 않게, 식은 것부터 버린다
+        _chat["last"] = {k: v for k, v in _chat["last"].items()
+                         if now - v < CHAT_GAP_S}
+    _chat["last"][who] = now
+    _chat["seq"] += 1
+    _chat["items"].append({"id": _chat["seq"], "text": text})
+    del _chat["items"][:-CHAT_MAX]
+    return _chat["seq"]
+
+
+def chat_since(handler):
+    """?chatSince=N 뒤에 들어온 말만 준다. 이미 외친 말을 또 외치지 않게."""
+    q = urllib.parse.parse_qs(urllib.parse.urlparse(handler.path).query)
+    try:
+        since = int(q.get("chatSince", ["0"])[0])
+    except ValueError:
+        since = 0
+    return [m for m in _chat["items"] if m["id"] > since]
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "stock-war"
     sys_version = ""
@@ -754,6 +812,40 @@ class Handler(BaseHTTPRequestHandler):
         except OSError:
             self.send_error(404, "not found")
 
+    def do_POST(self):
+        if urllib.parse.urlparse(self.path).path == "/api/chat":
+            return self.do_chat()
+        self.send_error(404, "not found")
+
+    def do_chat(self):
+        """POST /api/chat  {"text": "..."}   한마디를 전장으로 흘려 보낸다.
+
+        붙인 번호를 돌려준다. 보낸 사람은 그 번호로 커서를 당겨 두면 자기가 쓴
+        말을 다음 폴링에서 한 번 더 듣지 않는다.
+        """
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            n = 0
+        if not 0 < n <= 1024:
+            self.send_error(400, "bad length")
+            return
+        try:
+            text = chat_clean(json.loads(self.rfile.read(n)).get("text", ""))
+        except (ValueError, AttributeError):
+            self.send_error(400, "bad json")
+            return
+        if not text:
+            self.send_error(400, "empty")
+            return
+        cid = push_chat(text, chat_who(self), time.time())
+        if cid is None:
+            self.send_error(429, "too fast")
+            return
+        self._send(json.dumps({"id": cid, "text": text},
+                              ensure_ascii=False).encode("utf-8"),
+                   "application/json; charset=utf-8")
+
     def do_health(self):
         """설정과 상류 접속을 한 번에 점검한다. 키 값은 어떤 경우에도 싣지 않는다."""
         appkey, secret = kiwoom_creds() if PROVIDER == "kiwoom" else ("", "")
@@ -788,6 +880,7 @@ class Handler(BaseHTTPRequestHandler):
                            "live": LIVE, "provider": PROVIDER or "mock",
                            "pollMs": 10000 if LIVE else 2000,
                            "dev": _dev["price"] is not None, "news": _news["items"],
+                           "chat": chat_since(self),
                            "stale": bool(_live.get("stale")),
                            "session": market_session(),
                            "kst": datetime.now(KST).strftime("%H%M"),

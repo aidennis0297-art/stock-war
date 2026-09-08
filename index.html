@@ -159,6 +159,18 @@
             font:400 11px/1 var(--sans); }
   #selSay:focus-visible { outline:2px solid var(--gold); outline-offset:1px; }
 
+  /* 보는 사람이 남기는 한마디 — 서버를 거쳐 모두의 화면에서 외쳐진다 */
+  #chatBar { position:fixed; left:14px; bottom:60px; display:flex; align-items:center;
+             gap:9px; background:var(--panel); border:1px solid var(--edge);
+             border-radius:3px; padding:8px 11px; backdrop-filter:blur(7px);
+             font-size:11px; letter-spacing:.08em; color:var(--dim); }
+  #chatMark { color:var(--gold); white-space:nowrap; }
+  #chatSay { width:190px; background:rgba(0,0,0,.35); color:var(--ink);
+             border:1px solid var(--edge); border-radius:2px; padding:5px 8px;
+             font:400 11px/1 var(--sans); }
+  #chatSay::placeholder { color:var(--dim); }
+  #chatSay:focus-visible { outline:2px solid var(--gold); outline-offset:1px; }
+
   /* 종목 교체 중 — 병사들이 성으로 물러나는 동안 덮는다 */
   #loading { position:fixed; inset:0; display:none; place-items:center; z-index:20;
              background:rgba(11,9,13,.5); backdrop-filter:blur(2px); overflow:hidden; }
@@ -274,6 +286,12 @@
   <input id="selSay" type="text" maxlength="26" placeholder="한마디 입력 후 Enter">
   <button class="ctl" id="selView">시점</button>
   <button class="ctl" id="selClose">닫기</button>
+</div>
+
+<div id="chatBar">
+  <span id="chatMark">함 성</span>
+  <input id="chatSay" type="text" maxlength="40" autocomplete="off"
+         placeholder="한마디 쓰고 Enter — 관중이 외친다">
 </div>
 
 <div id="loading">

@@ -128,6 +128,7 @@ def main():
     test_kis_parse()
     test_kiwoom_parse()
     test_static_allowlist()
+    test_chat()
     print("ok")
 
 
@@ -258,6 +259,104 @@ def test_static_allowlist():
         for path in ("/", "/index.html", "/war.js"):
             assert code(path) == 200, "%s 가 안 나온다" % path
     finally:
+        srv.shutdown()
+        srv.server_close()
+
+
+
+
+def test_chat():
+    """채팅이 들어오는 길과, 거기서 걸러 내야 하는 것들.
+
+    말풍선은 canvas 에 그리므로 태그가 살아날 자리는 없다. 대신 길이·제어문자·
+    연타는 서버에서 막아야 하고, 터널 뒤에서는 모든 요청이 루프백에서 오므로
+    사람을 가리는 기준이 client_address 가 아니라는 점도 함께 못박는다.
+    """
+    import json
+    import threading
+    import urllib.error
+    import urllib.request
+    from http.server import HTTPServer
+
+    # 한 줄로 눌러 담기
+    assert server.chat_clean("  가  즈 아  ") == "가 즈 아"
+    assert server.chat_clean("앞\x00\x07뒤") == "앞뒤"
+    assert server.chat_clean("한\r\n줄\t로") == "한 줄 로"
+    assert len(server.chat_clean("가" * 200)) == server.CHAT_LEN
+    assert server.chat_clean("   ") == ""
+
+    # 레이트 리밋 기준. 터널 뒤에서는 원 IP 헤더를 쓰되 루프백에서만 믿는다.
+    class Peer:
+        def __init__(self, ip, headers=None):
+            self.client_address = (ip, 1234)
+            self.headers = headers or {}
+
+    assert server.chat_who(Peer("203.0.113.7")) == "203.0.113.7"
+    assert server.chat_who(Peer("127.0.0.1", {"CF-Connecting-IP": "203.0.113.9"})) \
+        == "203.0.113.9"
+    assert server.chat_who(Peer("203.0.113.7", {"CF-Connecting-IP": "1.1.1.1"})) \
+        == "203.0.113.7", "루프백이 아니면 헤더를 믿지 않는다"
+
+    # 연타는 사람 단위로 막는다
+    server._chat.update(items=[], seq=0, last={})
+    assert server.push_chat("하나", "1.2.3.4", 100.0) == 1
+    assert server.push_chat("연타", "1.2.3.4", 100.5) is None
+    assert server.push_chat("남", "5.6.7.8", 100.5) == 2, "다른 사람까지 막으면 안 된다"
+    assert server.push_chat("간격 후", "1.2.3.4", 100.0 + server.CHAT_GAP_S) == 3
+
+    # 밀린 말은 흘려 보낸다
+    for i in range(server.CHAT_MAX + 10):
+        server.push_chat("말 %d" % i, "9.9.9.9", 200.0 + i * server.CHAT_GAP_S)
+    assert len(server._chat["items"]) == server.CHAT_MAX
+
+    # 커서 뒤의 말만 준다
+    class Req:
+        def __init__(self, path):
+            self.path = path
+
+    server._chat.update(items=[{"id": 1, "text": "먼저"}, {"id": 2, "text": "나중"}],
+                        seq=2, last={})
+    assert [m["text"] for m in server.chat_since(Req("/api/state"))] == ["먼저", "나중"]
+    assert [m["text"] for m in server.chat_since(Req("/api/state?chatSince=1"))] == ["나중"]
+    assert server.chat_since(Req("/api/state?chatSince=9")) == []
+    assert len(server.chat_since(Req("/api/state?chatSince=bogus"))) == 2, \
+        "이상한 커서는 처음부터로 본다"
+
+    # 바깥에서 들어오는 본문은 실제로 띄워서 확인한다
+    srv = HTTPServer(("127.0.0.1", 0), server.Handler)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    base = "http://127.0.0.1:%d" % srv.server_address[1]
+
+    def post(body):
+        req = urllib.request.Request(base + "/api/chat", body,
+                                     {"Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=5) as r:
+                return r.status, json.load(r)
+        except urllib.error.HTTPError as e:
+            return e.code, None
+
+    gap = server.CHAT_GAP_S
+    try:
+        server.CHAT_GAP_S = 0.0          # 간격은 위에서 따로 봤다
+        server._chat.update(items=[], seq=0, last={})
+        code, got = post(json.dumps({"text": "  가즈아  "}).encode("utf-8"))
+        assert (code, got["text"]) == (200, "가즈아"), (code, got)
+        assert post(b"not json")[0] == 400
+        assert post(json.dumps([1, 2]).encode())[0] == 400
+        assert post(json.dumps({"text": "   "}).encode("utf-8"))[0] == 400
+        assert post(json.dumps({"nope": 1}).encode())[0] == 400
+        assert post(b"")[0] == 400
+        assert post(b'{"text":"' + b"a" * 4000 + b'"}')[0] == 400, \
+            "큰 본문은 읽기 전에 막는다"
+        # GET 으로는 들어올 수 없다
+        try:
+            with urllib.request.urlopen(base + "/api/chat", timeout=5) as r:
+                assert False, "GET /api/chat 가 %d 로 열려 있다" % r.status
+        except urllib.error.HTTPError as e:
+            assert e.code == 404, e.code
+    finally:
+        server.CHAT_GAP_S = gap
         srv.shutdown()
         srv.server_close()
 

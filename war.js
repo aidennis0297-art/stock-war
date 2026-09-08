@@ -1759,6 +1759,11 @@ function apply(s) {
 
   applyCasualties(battle);
   lastBattle = battle;          // 프레임 루프가 이걸 보고 떠든다
+  // 남이 남긴 한마디. 첫 응답에서는 밀려 있던 말을 쏟지 않고 커서만 맞춘다.
+  const chat = s.chat || [];
+  if (lastChatId === null) lastChatId = chat.reduce((a, m) => Math.max(a, m.id), 0);
+  else for (const m of chat) if (m.id > lastChatId) { lastChatId = m.id; speak(m.text); }
+
   showNews(s.news || []);
   $('devToggle').hidden = s.live;
   $('devPrice').textContent = fmt(raw.price);
@@ -1769,9 +1774,13 @@ let pollTimer = null;
 // 종목이 바뀌면 세대를 올린다. 교체 직전에 이미 날아간 요청이 뒤늦게 돌아와
 // 옛 종목으로 화면을 덮어쓰는 걸 막는다 — 갱신 때마다 종목이 되돌아가던 원인이다.
 let stateGen = 0;
+// 채팅 커서. 마지막으로 받은 번호를 들고 있어 같은 말을 두 번 외치지 않는다.
+// null 이면 아직 첫 응답 전이라는 뜻 — 그때는 밀린 말을 쏟지 않고 맞추기만 한다.
+let lastChatId = null;
 
 async function fetchState() {
-  const r = await fetch('/api/state', { cache: 'no-store' });
+  const r = await fetch('/api/state?chatSince=' + (lastChatId || 0),
+                        { cache: 'no-store' });
   if (!r.ok) throw new Error('HTTP ' + r.status);
   return r.json();
 }
@@ -1836,6 +1845,32 @@ $('selSay').addEventListener('keydown', e => {
   speak(e.currentTarget.value.trim(), selected || {});
   e.currentTarget.value = '';
 });
+// 바깥에서 들어오는 한마디. selSay 가 이 컴퓨터 안에서만 도는 미리보기라면,
+// 이쪽은 서버를 거쳐 지금 보고 있는 모두의 화면에서 외쳐진다.
+function chatMark(msg) {
+  $('chatMark').textContent = msg;
+  setTimeout(() => { $('chatMark').textContent = '함 성'; }, 1600);
+}
+
+$('chatSay').addEventListener('keydown', async e => {
+  const el = e.currentTarget, text = el.value.trim();
+  if (e.key !== 'Enter' || !text) return;
+  el.value = '';
+  try {
+    const r = await fetch('/api/chat', {
+      method: 'POST', cache: 'no-store',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text })
+    });
+    if (!r.ok) return chatMark(r.status === 429 ? '너무 빠르다' : '전달 실패');
+    const m = await r.json();
+    // 보낸 사람은 폴링을 기다리지 않고 바로 본다. 커서를 당겨 두면 다음
+    // 응답에 같은 말이 실려 와도 두 번 외치지 않는다.
+    lastChatId = Math.max(lastChatId || 0, m.id);
+    speak(m.text);
+  } catch { chatMark('전달 실패'); }
+});
+
 $('selView').addEventListener('click', viewSelected);
 $('selClose').addEventListener('click', () => select(null));
 addEventListener('keydown', e => { if (e.key === 'Escape') select(null); });
