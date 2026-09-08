@@ -24,7 +24,7 @@ import urllib.request
 import xml.etree.ElementTree as ET
 from collections import deque
 from datetime import datetime, timedelta, timezone
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 def _load_env(path=".env"):
     """키를 셸마다 export 하지 않아도 되게 .env 를 읽는다.
@@ -327,6 +327,11 @@ def symbol_list():
 
 def switch_symbol(code):
     """종목을 갈아끼운다. 이전 종목의 이력이 남으면 전투 수치가 오염된다."""
+    with _upstream:
+        return _switch_symbol_locked(code)
+
+
+def _switch_symbol_locked(code):
     global SYMBOL, NAME
     # 후보 목록에서 직접 찾는다. symbol_list() 를 부르면 캐시가 식었을 때
     # 열 종목을 조회하느라 전환이 통째로 멎는다.
@@ -378,6 +383,14 @@ def _kiwoom_token():
     """
     if _kw_token["value"] and time.time() < _kw_token["exp"]:
         return _kw_token["value"]
+    # 여러 스레드가 동시에 발급을 시도하면 키움이 잦은 재발급으로 보고 막는다.
+    with _upstream:
+        return _kiwoom_token_locked()
+
+
+def _kiwoom_token_locked():
+    if _kw_token["value"] and time.time() < _kw_token["exp"]:
+        return _kw_token["value"]          # 기다리는 사이 다른 스레드가 받아 왔다
     try:
         with open(TOKEN_FILE, encoding="utf-8") as f:
             saved = json.load(f)
@@ -769,6 +782,10 @@ def kis_raw():
 # 배로 늘지 않도록 폴링 간격보다 살짝 짧게 캐시한다.
 LIVE_TTL_S = 8.0
 _live = {"at": 0.0, "raw": None, "stale": False}
+# ponytail: 상류 호출 전체를 잠그는 자물쇠 하나. 스레드가 동시에 들어오면
+# 캐시 검사와 갱신 사이가 벌어져 같은 초에 여럿이 키움을 부르고 429 를 맞는다.
+# 보는 사람이 늘어 대기가 눈에 띄면 종목별로 쪼개야 한다.
+_upstream = threading.RLock()
 
 
 def live_raw():
@@ -776,6 +793,11 @@ def live_raw():
     실패하면 마지막으로 받은 값을 그대로 내보내고 잠시 뒤 다시 시도한다."""
     now = time.time()
     tick_live_news(now)
+    with _upstream:
+        return _live_raw_locked(now)
+
+
+def _live_raw_locked(now):
     if _live["raw"] is None or now - _live["at"] >= LIVE_TTL_S:
         fetch = kiwoom_raw if PROVIDER == "kiwoom" else kis_raw
         # 종목을 갓 바꿨을 때는 기댈 이전 값이 없다. 여기서 502 를 뱉으면 화면이
@@ -858,8 +880,9 @@ def push_chat(text, who, now):
                          if now - v < CHAT_GAP_S}
     _chat["last"][who] = now
     _chat["seq"] += 1
-    _chat["items"].append({"id": _chat["seq"], "text": text})
-    del _chat["items"][:-CHAT_MAX]
+    # push_news 와 같은 이유로 제자리에서 줄이지 않는다. 이제 요청마다 스레드가
+    # 따로 도므로, 줄이는 순간 다른 스레드의 json.dumps 가 같은 리스트를 훑고 있다.
+    _chat["items"] = (_chat["items"] + [{"id": _chat["seq"], "text": text}])[-CHAT_MAX:]
     return _chat["seq"]
 
 
@@ -1054,4 +1077,4 @@ if __name__ == "__main__":
     print("stock-war  http://%s:%d   [%s]%s"
           % (host, port, ("LIVE " + PROVIDER.upper()) if LIVE else "MOCK",
              "  PUBLIC" if PUBLIC else ""))
-    HTTPServer((host, port), Handler).serve_forever()
+    ThreadingHTTPServer((host, port), Handler).serve_forever()
