@@ -766,29 +766,9 @@ class Handler(BaseHTTPRequestHandler):
             # 지문은 되돌릴 수 없다. 값을 드러내지 않고도 로컬과 같은 키인지 대조된다.
             "keyFp": hashlib.sha256(appkey.encode()).hexdigest()[:12],
             "secretFp": hashlib.sha256(secret.encode()).hexdigest()[:12],
-            "egress": None,
             "hasDemoKeys": bool(os.environ.get("KIWOOM_DEMO_APP_KEY")),
             "hasBaseKeys": bool(os.environ.get("KIWOOM_APP_KEY")),
         }
-        # 나가는 IP 를 확인한다. 국내 증권사 API 가 해외 IP 를 막는 경우가 있어
-        # 키가 맞는데도 거부당하는지 가리는 데 필요하다.
-        try:
-            with urllib.request.urlopen("https://api.ipify.org?format=json", timeout=6) as r:
-                info["egress"] = json.load(r).get("ip")
-        except Exception as e:
-            info["egress"] = "확인 실패: " + type(e).__name__
-        # 인증도 본문도 없는 맨 GET 을 던져 본다. 이것마저 같은 400 이면 요청이
-        # 잘못된 게 아니라 이 호스트에 닿는 것 자체가 막힌 것이다.
-        try:
-            req = urllib.request.Request(KIWOOM_HOST + "/", method="GET")
-            with urllib.request.urlopen(req, timeout=8) as r:
-                info["plainGet"] = "HTTP %d" % r.status
-        except urllib.error.HTTPError as e:
-            body = e.read().decode("utf-8", "replace")
-            info["plainGet"] = "HTTP %d | %s" % (e.code, " ".join(body[:90].split()))
-        except Exception as e:
-            info["plainGet"] = "실패: " + type(e).__name__
-
         if LIVE and PROVIDER == "kiwoom":
             try:
                 _kiwoom_token()
@@ -874,7 +854,8 @@ if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8000))
     # 기본은 이 컴퓨터에서만 열린다. 공개 배포일 때만 바깥으로 연다 — 실수로
     # 실전 키를 들고 온 서버가 네트워크에 노출되는 일이 없게 한다.
-    host = "0.0.0.0" if PUBLIC else "127.0.0.1"
+    # 터널(cloudflared)로 내보낼 때는 루프백만 열면 된다. STOCK_WAR_BIND 로 좁힌다.
+    host = os.environ.get("STOCK_WAR_BIND") or ("0.0.0.0" if PUBLIC else "127.0.0.1")
     print("stock-war  http://%s:%d   [%s]%s"
           % (host, port, ("LIVE " + PROVIDER.upper()) if LIVE else "MOCK",
              "  PUBLIC" if PUBLIC else ""))
