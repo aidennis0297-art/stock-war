@@ -1,5 +1,12 @@
-# Render 무료 웹 서비스 설정. 키는 여기에 적지 않는다 — sync:false 는
-# "대시보드에서 직접 입력한다"는 뜻이고, 그래야 저장소에 안 남는다.
+# Render 무료 웹 서비스 설정 — 키 없이 도는 공개 데모다.
+#
+# 키움 API 는 해외에서 오는 연결을 애플리케이션에 닿기 전에 끊는다. Render 는
+# 한국 리전이 없으므로 여기서는 실시세를 받을 수 없다(README 배포 항목 참조).
+# 그래서 자격증명을 아예 두지 않는다. 키가 하나도 없으면 서버가 목업 모드로
+# 떨어지고, 목업은 현재가·호가 10단계·투자자별 수급·뉴스를 전부 만들어 내므로
+# 화면은 온전하게 돈다. 실시세는 한국에서 띄운 서버에서만 본다.
+#
+# 여기에 키를 넣지 말 것. 넣어도 막혀서 안 되고, 샐 자리만 하나 늘어난다.
 services:
   - type: web
     name: stock-war
@@ -17,9 +24,3 @@ services:
         value: "005930"
       - key: STOCK_WAR_NAME
         value: 삼성전자
-      # 아래 둘은 Render 대시보드 > Environment 에서 입력한다. 저장소에는 없다.
-      # 이름에 DEMO 가 박혀 있어 실전 키를 잘못 넣을 여지가 줄어든다.
-      - key: KIWOOM_DEMO_APP_KEY
-        sync: false
-      - key: KIWOOM_DEMO_SECRET_KEY
-        sync: false
