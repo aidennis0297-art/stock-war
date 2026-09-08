@@ -15,10 +15,13 @@ import json
 import math
 import os
 import random
+import re
+import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import xml.etree.ElementTree as ET
 from collections import deque
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -343,8 +346,9 @@ def switch_symbol(code):
     _price_hist.clear()
     _sidecar.update(until=0.0, dir="")
     _mock.update(t=0, high=0.0, low=0.0)
-    _news["items"].clear()          # 남의 종목 뉴스가 남으면 안 된다
+    _news["items"] = []             # 남의 종목 뉴스가 남으면 안 된다
     _news["next"] = 0.0
+    _news["seen"].clear()
     return True
 
 
@@ -512,23 +516,25 @@ _mock = {"prev": 78000.0, "price": 0.0, "open": 0.0, "high": 0.0, "low": 0.0,
 # 개발자 툴이 현재가를 붙잡고 있을 때의 값. None 이면 랜덤워크가 그대로 돈다.
 _dev = {"price": None}
 
-# 데모용 시황 문구다. 실제 기사가 아니므로 출처를 "샘플"로 고정한다 — 실존 언론사
-# 이름을 붙이면 없는 기사를 지어내는 셈이 된다. 실연동 때는 연합뉴스·한국경제·
-# 매일경제 화이트리스트로 거른 진짜 제목과 언론사명이 그대로 이 자리에 들어간다.
+# 목업일 때 쓰는 시황 문구다. 실제 기사가 아니므로 출처를 "샘플"로 고정한다 —
+# 실존 언론사 이름을 붙이면 없는 기사를 지어내는 셈이 된다. 실데이터일 때는
+# 구글 뉴스에서 받은 진짜 제목과 언론사명이 그대로 이 자리에 들어간다.
 NEWS_POOL = {
     "호재": ["외국인 순매수 확대", "반도체 업황 개선 전망", "기관 대량 매수 유입",
              "실적 개선 기대감 확산", "목표주가 상향"],
     "악재": ["외국인 매도세 지속", "환율 급등 부담", "기관 차익 실현 매물",
              "업황 둔화 우려", "목표주가 하향"],
 }
-_news = {"items": [], "next": 0.0, "seq": 0}
+_news = {"items": [], "next": 0.0, "seq": 0, "seen": set()}
 
 
-def push_news(tone, now, title=None):
+def push_news(tone, now, title=None, source="샘플"):
     _news["seq"] += 1
-    _news["items"].append({"id": _news["seq"], "ts": int(now * 1000), "tone": tone,
-                           "source": "샘플", "title": title or random.choice(NEWS_POOL[tone])})
-    del _news["items"][:-6]
+    item = {"id": _news["seq"], "ts": int(now * 1000), "tone": tone,
+            "source": source, "title": title or random.choice(NEWS_POOL[tone])}
+    # 제자리에서 줄이지 않고 새 리스트로 갈아 끼운다. 실기사는 다른 스레드에서
+    # 들어오는데, 줄이는 순간 json.dumps 가 같은 리스트를 훑고 있을 수 있다.
+    _news["items"] = (_news["items"] + [item])[-6:]
 
 
 def tick_news(now, bias):
@@ -537,6 +543,95 @@ def tick_news(now, bias):
         return
     _news["next"] = now + random.uniform(20, 50)
     push_news("호재" if random.random() < 0.5 + 0.35 * bias else "악재", now)
+
+
+# --- 실제 기사 ---------------------------------------------------------------
+# 구글 뉴스 RSS. 키가 필요 없고 표준 라이브러리로 읽힌다. 제목은 "본문 - 언론사"
+# 꼴로 오고 <source> 에 언론사명이 따로 들어 있다.
+NEWS_URL = "https://news.google.com/rss/search?q=%s&hl=ko&gl=KR&ceid=KR:ko"
+NEWS_EVERY_S = 180.0
+NEWS_MIN_LEN = 10          # 이보다 짧으면 기사가 아니라 시세 페이지 제목이다
+NEWS_SEEN_MAX = 400
+# 시세를 제목에 그대로 박아 넣는 자동 생성 기사("… 1,851,000원 3.8%% 상승").
+# 화면이 이미 보여 주는 값이라 보탬이 없는데 시간마다 나와 피드를 덮는다.
+NEWS_QUOTE_BOT = re.compile(r"[0-9]{1,3}(?:,[0-9]{3})+\s*원")
+
+# ponytail: 제목 키워드만으로 호재/악재를 가른다. 문맥을 못 읽으므로 "상승 막는
+# 리스크" 같은 제목은 틀린다. 정확도가 문제되면 본문까지 읽거나 분류 모델을
+# 붙여야 한다. 어느 쪽도 아니면 아예 띄우지 않는다 — 화면에는 홍·청 두 색뿐이라
+# 애매한 것을 억지로 한쪽에 넣으면 봉화가 거짓말을 하게 된다.
+NEWS_GOOD = ("상승", "급등", "강세", "반등", "신고가", "최고가", "호실적", "흑자",
+             "수주", "개선", "상향", "순매수", "돌파", "기대", "호황", "훈풍",
+             "랠리", "저평가", "성장", "호조", "회복")
+NEWS_BAD = ("하락", "급락", "폭락", "약세", "신저가", "최저가", "적자", "부진",
+            "우려", "하향", "순매도", "리스크", "악재", "위기", "쇼크", "무너",
+            "손실", "하회", "둔화", "감산", "철수")
+
+
+def news_tone(title):
+    """호재/악재. 어느 쪽도 아니거나 팽팽하면 None — 띄우지 않는다."""
+    good = sum(w in title for w in NEWS_GOOD)
+    bad = sum(w in title for w in NEWS_BAD)
+    if good == bad:
+        return None
+    return "호재" if good > bad else "악재"
+
+
+def news_parse(xml):
+    """RSS 에서 (제목, 언론사) 를 뽑는다. 제목 끝의 ' - 언론사' 는 떼어 낸다."""
+    out = []
+    for item in ET.fromstring(xml).findall(".//item"):
+        title = (item.findtext("title") or "").strip()
+        node = item.find("source")
+        source = (node.text or "").strip() if node is not None else ""
+        if source and title.endswith(" - " + source):
+            title = title[:-(len(source) + 3)].strip()
+        # 출처가 도메인꼴이면 버린다. 구글이 언론사명을 못 붙인 항목이라
+        # 화면에 "v.daum.net" 같은 게 그대로 뜬다.
+        if (len(title) >= NEWS_MIN_LEN and source and "." not in source
+                and not NEWS_QUOTE_BOT.search(title)):
+            out.append((title, source))
+    return out
+
+
+def news_pick(rows, seen):
+    """아직 안 띄운 것 중 색이 분명한 첫 기사. 한 번에 하나만 집는다 —
+    여섯 개를 한꺼번에 밀어 넣으면 봉화도 여섯 번 오른다."""
+    for title, source in rows:
+        if title not in seen and news_tone(title):
+            return title, source
+    return None
+
+
+def _pull_news(name):
+    """다른 스레드에서 돈다. 실패하면 조용히 물러난다 — 기사가 없다고 해서
+    화면이 멈출 이유는 없다."""
+    try:
+        url = NEWS_URL % urllib.parse.quote(name + " 주가")
+        req = urllib.request.Request(url, headers={"User-Agent": "stock-war"})
+        with urllib.request.urlopen(req, timeout=8) as r:
+            rows = news_parse(r.read())
+        got = news_pick(rows, _news["seen"])
+        if got:
+            title, source = got
+            _news["seen"].add(title)
+            if len(_news["seen"]) > NEWS_SEEN_MAX:
+                _news["seen"].clear()      # 오래 돌면 비운다. 다시 봐도 손해가 없다
+            push_news(news_tone(title), time.time(), title, source)
+    except Exception:
+        pass
+    finally:
+        _news["pulling"] = False
+
+
+def tick_live_news(now):
+    """실데이터일 때의 뉴스. 시세 경로에서 부르지만 같은 스레드에서 기다리면
+    그 폴링이 통째로 늦어지므로 따로 돌린다."""
+    if now < _news["next"] or _news.get("pulling"):
+        return
+    _news["next"] = now + NEWS_EVERY_S
+    _news["pulling"] = True
+    threading.Thread(target=_pull_news, args=(NAME,), daemon=True).start()
 
 
 def mock_raw():
@@ -680,6 +775,7 @@ def live_raw():
     """상류 시세. 호출 제한(429)에 걸려도 화면이 통째로 죽으면 안 되므로,
     실패하면 마지막으로 받은 값을 그대로 내보내고 잠시 뒤 다시 시도한다."""
     now = time.time()
+    tick_live_news(now)
     if _live["raw"] is None or now - _live["at"] >= LIVE_TTL_S:
         fetch = kiwoom_raw if PROVIDER == "kiwoom" else kis_raw
         # 종목을 갓 바꿨을 때는 기댈 이전 값이 없다. 여기서 502 를 뱉으면 화면이
@@ -723,6 +819,7 @@ STATIC = {
 CHAT_MAX = 30                 # 이보다 밀린 말은 흘려 보낸다
 CHAT_LEN = 40                 # 말풍선이 26자에서 잘리므로 더 받아도 소용없다
 CHAT_GAP_S = 2.0              # 한 사람이 이 간격보다 자주 던질 수 없다
+CHAT_BODY_MAX = 1024          # 40자 한 줄에 이보다 큰 본문이 붙을 이유가 없다
 _chat = {"items": [], "seq": 0, "last": {}}
 
 
@@ -827,7 +924,12 @@ class Handler(BaseHTTPRequestHandler):
             n = int(self.headers.get("Content-Length") or 0)
         except ValueError:
             n = 0
-        if not 0 < n <= 1024:
+        if not 0 < n <= CHAT_BODY_MAX:
+            # 본문을 안 읽은 채 닫으면 보내던 쪽이 400 대신 연결 끊김을 본다.
+            # 응답을 받아 볼 수 있게 버릴 만큼만 읽어 비운다. 길이를 크게
+            # 불러 놓고 계속 밀어 넣는 경우까지 받아 주지는 않는다.
+            if n > 0:
+                self.rfile.read(min(n, 65536))
             self.send_error(400, "bad length")
             return
         try:

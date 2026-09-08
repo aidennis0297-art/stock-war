@@ -129,6 +129,7 @@ def main():
     test_kiwoom_parse()
     test_static_allowlist()
     test_chat()
+    test_news()
     print("ok")
 
 
@@ -359,6 +360,58 @@ def test_chat():
         server.CHAT_GAP_S = gap
         srv.shutdown()
         srv.server_close()
+
+
+def test_news():
+    """실기사 파싱과 호재/악재 판정.
+
+    화면에는 홍·청 두 색뿐이라 어느 쪽도 아닌 기사는 아예 띄우면 안 된다.
+    봉화가 오르는데 기사가 중립이면 화면이 거짓말을 하는 셈이다.
+    """
+    feed = """<?xml version="1.0"?><rss><channel>
+  <item><title>SK하이닉스 - 매일경제 마켓</title><source url="x">매일경제 마켓</source></item>
+  <item><title>삼성전자 8% 폭락, 주가 무너진 이유 - 한국경제</title><source url="x">한국경제</source></item>
+  <item><title>3분기 실적 전망 상향, 주가도 동반 반등 - v.daum.net</title><source url="x">v.daum.net</source></item>
+  <item><title>노무라 "심각한 저평가" 목표가 올린다 - 연합뉴스</title><source url="x">연합뉴스</source></item>
+  <item><title>오늘의 증시 일정 안내드립니다 - YTN</title><source url="x">YTN</source></item>
+  <item><title>SK하이닉스 주가, 9월 8일 장중 1,851,000원 3.81%% 상승 - 톱스타뉴스</title><source url="x">톱스타뉴스</source></item>
+</channel></rss>"""
+
+    rows = server.news_parse(feed.encode("utf-8"))
+    titles = [tt for tt, _ in rows]
+    assert "삼성전자 8% 폭락, 주가 무너진 이유" in titles, "제목 끝의 언론사명을 떼야 한다"
+    assert all(" - " not in tt[-14:] for tt in titles), titles
+    assert not any("SK하이닉스" == tt for tt in titles), "시세 페이지 제목은 기사가 아니다"
+    assert not any(s == "v.daum.net" for _, s in rows), "도메인꼴 출처는 거른다"
+    # 시세를 제목에 박은 자동 생성 기사는 화면이 이미 보여 주는 값이다
+    assert not any("1,851,000" in tt for tt in titles)
+    assert ("노무라 \"심각한 저평가\" 목표가 올린다", "연합뉴스") in rows
+
+    assert server.news_tone("삼성전자 8% 폭락, 주가 무너진 이유") == "악재"
+    assert server.news_tone("3분기 실적 전망 상향, 주가도 동반 반등") == "호재"
+    assert server.news_tone("씨티, 환율 부담 반영해 목표주가 하향") == "악재"
+    assert server.news_tone("오늘의 증시 일정 안내드립니다") is None, "색이 없으면 안 띄운다"
+    assert server.news_tone("주가 상승 막는 리스크") is None, "팽팽하면 안 띄운다"
+
+    # 한 번에 하나만 집는다. 여섯 개를 한꺼번에 밀면 봉화도 여섯 번 오른다.
+    seen = set()
+    first = server.news_pick(rows, seen)
+    assert first is not None and server.news_tone(first[0])
+    seen.add(first[0])
+    second = server.news_pick(rows, seen)
+    assert second is not None and second[0] != first[0]
+    assert server.news_pick(rows, {tt for tt, _ in rows}) is None
+
+    # 실기사는 다른 스레드에서 들어온다. 읽는 쪽이 중간 상태를 보면 안 되므로
+    # 리스트를 제자리에서 줄이지 않고 갈아 끼운다.
+    server._news.update(items=[], seq=0, next=0.0)
+    before = server._news["items"]
+    server.push_news("호재", 1000.0, "제목", "연합뉴스")
+    assert before == [], "제자리에서 건드리면 안 된다"
+    assert server._news["items"][-1]["source"] == "연합뉴스"
+    for i in range(10):
+        server.push_news("악재", 1000.0 + i, "제목 %d" % i, "한국경제")
+    assert len(server._news["items"]) == 6
 
 
 if __name__ == "__main__":
